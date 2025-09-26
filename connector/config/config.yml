@@ -1,0 +1,7 @@
+connector:
+  enigma_ws_url: "/ws/v1?eofqjvwilceiecjwqludjtshrcnfcduo"
+  rest_port: 5000
+sterling:
+  ping_interval_seconds: 30
+logging:
+  level: INFO
