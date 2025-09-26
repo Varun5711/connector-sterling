@@ -1,0 +1,11 @@
+connector:
+  enigma_ws_url: "idhar apna backend connector"
+  auth_token: "token daalna h xyz"
+  rest_port: 5000
+
+sterling:
+  login_timeout_seconds: 30
+  order_rate_limit_per_sec: 2
+
+logging:
+  level: INFO
