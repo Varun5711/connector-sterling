@@ -2,8 +2,6 @@ fastapi==0.95.2
 uvicorn==0.21.1
 websockets==11.0.3
 PyYAML==6.0
-pywin32==305
-httpx==0.24.1
-python-jose==3.3.0
-prometheus-client==0.16.0
 structlog==24.1.0
+httpx==0.24.1
+pythonnet==3.0.3

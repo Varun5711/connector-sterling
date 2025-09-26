@@ -1,7 +1,3 @@
 connector:
-  enigma_ws_url: "/ws/v1?eofqjvwilceiecjwqludjtshrcnfcduo"
+  enigma_ws_url: "wss://your-vps-domain/connector/ws"
   rest_port: 5000
-sterling:
-  ping_interval_seconds: 30
-logging:
-  level: INFO
