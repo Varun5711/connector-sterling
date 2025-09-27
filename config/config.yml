@@ -1,3 +1,0 @@
-connector:
-  enigma_ws_url: "wss://your-vps-domain/connector/ws"
-  rest_port: 5000

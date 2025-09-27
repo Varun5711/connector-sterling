@@ -1,50 +1,51 @@
-import asyncio, websockets, json, logging
+﻿import asyncio
+import logging
+import websockets
+import ssl
+import certifi
+
 LOG = logging.getLogger("ws_client")
 
 class WSClient:
-    def __init__(self, url, token, sterling, session_mgr, tls_verify=True):
+    def __init__(self, url: str, token: str, session_manager, verify: bool = True, cafile: str | None = None):
         self.url = url
         self.token = token
-        self.sterling = sterling
-        self.session_mgr = session_mgr
-        self.ws = None
-        self._stopping = False
+        self.session_manager = session_manager
+        self.verify = verify
+        self.cafile = cafile
 
-        self.session_mgr.register_outbound_callback(self._on_sterling_event)
+    def _make_ssl_context(self):
+        """Build SSL context based on settings."""
+        if self.url.startswith("ws://"):
+            return None  # no TLS for plain ws://
+        if not self.verify:
+            LOG.warning("⚠️ TLS verification disabled (unsafe, use only for dev/testing!)")
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        if self.cafile:
+            return ssl.create_default_context(cafile=self.cafile)
+        return ssl.create_default_context(cafile=certifi.where())
 
     async def connect_loop(self):
-        while not self._stopping:
+        """Keep reconnecting WebSocket client."""
+        while True:
             try:
                 await self._run()
-            except Exception:
-                LOG.exception("WS error")
+            except Exception as e:
+                LOG.error("WS error: %s", e, exc_info=True)
                 await asyncio.sleep(5)
 
     async def _run(self):
-        headers = {}
-        if self.token: headers["Authorization"] = f"Bearer {self.token}"
-        async with websockets.connect(self.url, extra_headers=headers) as ws:
-            self.ws = ws
-            accounts = self.sterling.get_accounts()
-            self.session_mgr.set_session("sterling-session", accounts)
-            await ws.send(json.dumps({"type":"sessionRegister","accounts":accounts}))
+        headers = {"Authorization": f"Bearer {self.token}"}
+        ssl_ctx = self._make_ssl_context()
 
-            async for raw in ws:
-                msg = json.loads(raw)
-                await self._handle(msg)
-
-    async def _handle(self, msg):
-        if msg.get("type")=="placeOrder":
-            order = msg["order"]
-            res = await self.sterling.send_market(order) if order.get("type")=="market" else await self.sterling.send_limit(order)
-            await self._send({"type":"orderAck","result":res})
-
-    async def _send(self, obj):
-        if self.ws: await self.ws.send(json.dumps(obj))
-
-    async def close(self):
-        self._stopping = True
-        if self.ws: await self.ws.close()
-
-    def _on_sterling_event(self, ev):
-        asyncio.get_event_loop().create_task(self._send(ev))
+        LOG.info("Connecting WS → %s", self.url)
+        async with websockets.connect(self.url, extra_headers=headers, ssl=ssl_ctx) as ws:
+            LOG.info("Connected to WS server")
+            async for msg in ws:
+                try:
+                    self.session_manager.handle_inbound_event(msg)
+                except Exception:
+                    LOG.exception("Error handling inbound WS message")
