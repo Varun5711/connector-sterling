@@ -232,4 +232,4 @@ if __name__ == "__main__":
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    uvicorn.run("connector.app:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run("connector.app:app", host="0.0.0.0", port=6000, reload=True)
