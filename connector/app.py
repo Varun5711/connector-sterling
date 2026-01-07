@@ -1,36 +1,27 @@
-﻿import asyncio
-from typing import Optional
-from fastapi import FastAPI, HTTPException
+﻿from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from connector.sterling_connector import SterlingConnector
+from typing import Optional
 
 app = FastAPI(title="Sterling Connector API", version="1.0")
 
 sterling: Optional[SterlingConnector] = None
 
 
-# ---------------------------
-# Request models (JSON body)
-# ---------------------------
-class LimitOrderRequest(BaseModel):
+# ============================================================
+# MODELS
+# ============================================================
+
+class UnifiedOrderRequest(BaseModel):
     account: str
     symbol: str
     ord_size: int
     ord_disp: Optional[int] = 0
     ord_route: str
-    ord_price: float
-    ord_side: str  # "B" or "S" (or "BUY"/"SELL" depending on your wrapper)
-    ord_tif: Optional[str] = "D"
-
-
-class MarketOrderRequest(BaseModel):
-    account: str
-    symbol: str
-    ord_size: int
-    ord_disp: Optional[int] = 0
-    ord_route: str
+    ord_price: Optional[float] = 0.0
     ord_side: str
     ord_tif: Optional[str] = "D"
+    ord_type: Optional[str] = None
 
 
 class StopOrderRequest(BaseModel):
@@ -56,75 +47,104 @@ class ReplaceRequest(BaseModel):
     new_price: float
 
 
-# ---------------------------
-# Startup / Shutdown
-# ---------------------------
+# ============================================================
+# STARTUP / SHUTDOWN
+# ============================================================
+
 @app.on_event("startup")
-async def startup_event():
+def startup_event():
     global sterling
     try:
         sterling = SterlingConnector()
         print("✅ SterlingConnector initialized")
     except Exception as e:
-        print("Failed to initialize SterlingConnector:", repr(e))
+        print(f"❌ Failed to initialize: {e}")
         raise
 
 
 @app.on_event("shutdown")
-async def shutdown_event():
+def shutdown_event():
     global sterling
     sterling = None
-    print("SterlingConnector set to None on shutdown")
+    print("🛑 SterlingConnector shutdown")
 
 
-# ---------------------------
-# Health
-# ---------------------------
-@app.get("/", tags=["health"])
-async def root():
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.get("/")
+def root():
     return {"status": "ok", "message": "Sterling Connector API running"}
 
 
-# ---------------------------
-# Orders endpoints
-# ---------------------------
-@app.post("/order", tags=["orders"])
-async def place_limit_order(req: LimitOrderRequest):
+# ============================================================
+# ORDERS
+# ============================================================
+
+@app.post("/order")
+def place_order(req: UnifiedOrderRequest):
     try:
-        result = sterling.send_limit(
-            req.account,
-            req.symbol,
-            int(req.ord_size),
-            int(req.ord_disp or 0),
-            req.ord_route,
-            float(req.ord_price),
-            req.ord_side,
-            req.ord_tif or "D",
+        is_market = (
+            req.ord_type == "M"
+            or req.ord_price is None
+            or req.ord_price == 0.0
         )
-        return {"order_id": result}
+
+        print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} ({'MKT' if is_market else 'LMT'})")
+
+        if is_market:
+            result = sterling.send_market(
+                req.account,
+                req.symbol,
+                int(req.ord_size),
+                int(req.ord_disp or 0),
+                req.ord_route,
+                req.ord_side,
+                req.ord_tif or "D"
+            )
+            
+            print(f"✅ {result}")
+            
+            return {
+                "order_type": "market",
+                "order_id": result,
+                "symbol": req.symbol,
+                "side": req.ord_side,
+                "quantity": req.ord_size
+            }
+        else:
+            result = sterling.send_limit(
+                req.account,
+                req.symbol,
+                int(req.ord_size),
+                int(req.ord_disp or 0),
+                req.ord_route,
+                float(req.ord_price),
+                req.ord_side,
+                req.ord_tif or "D"
+            )
+            
+            print(f"✅ {result}")
+            
+            return {
+                "order_type": "limit",
+                "order_id": result,
+                "symbol": req.symbol,
+                "side": req.ord_side,
+                "quantity": req.ord_size,
+                "price": req.ord_price
+            }
+
     except Exception as e:
+        print(f"❌ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/order/market", tags=["orders"])
-async def place_market_order(req: MarketOrderRequest):
-    try:
-        result = sterling.send_market(
-            req.account,
-            req.symbol,
-            int(req.ord_size),
-            int(req.ord_disp or 0),
-            req.ord_route,
-            req.ord_side,
-            req.ord_tif or "D",
-        )
-        return {"order_id": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/order/stop", tags=["orders"])
-async def place_stop_order(req: StopOrderRequest):
+@app.post("/order/stop")
+def place_stop_order(req: StopOrderRequest):
     try:
         if req.limit_price and req.limit_price > 0:
             result = sterling.send_stoplimit(
@@ -136,7 +156,7 @@ async def place_stop_order(req: StopOrderRequest):
                 float(req.stop_price),
                 float(req.limit_price),
                 req.ord_side,
-                req.ord_tif or "D",
+                req.ord_tif or "D"
             )
         else:
             result = sterling.send_stop(
@@ -147,15 +167,18 @@ async def place_stop_order(req: StopOrderRequest):
                 req.ord_route,
                 float(req.stop_price),
                 req.ord_side,
-                req.ord_tif or "D",
+                req.ord_tif or "D"
             )
+
         return {"order_id": result}
+
     except Exception as e:
+        print(f"❌ Stop order error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/order", tags=["orders"])
-async def cancel_order(req: CancelRequest):
+@app.delete("/order")
+def cancel_order(req: CancelRequest):
     try:
         sterling.cancel_order(req.account, req.order_id)
         return {"status": "cancel_requested", "order_id": req.order_id}
@@ -163,20 +186,25 @@ async def cancel_order(req: CancelRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/order/replace", tags=["orders"])
-async def replace_order(req: ReplaceRequest):
+@app.post("/order/replace")
+def replace_order(req: ReplaceRequest):
     try:
-        new_id = sterling.replace_order(req.order_id, req.new_qty, float(req.new_price))
+        new_id = sterling.replace_order(
+            req.order_id,
+            req.new_qty,
+            float(req.new_price)
+        )
         return {"new_order_id": new_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------------------
-# Positions & orders info
-# ---------------------------
-@app.get("/positions/{account}/{symbol}", tags=["positions"])
-async def get_position(account: str, symbol: str):
+# ============================================================
+# POSITIONS / ORDERS INFO
+# ============================================================
+
+@app.get("/positions/{account}/{symbol}")
+def get_position(account: str, symbol: str):
     try:
         pos = sterling.position(account, symbol)
         return {"account": account, "symbol": symbol, "position": pos}
@@ -184,8 +212,8 @@ async def get_position(account: str, symbol: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/positions/{account}", tags=["positions"])
-async def get_all_positions(account: str):
+@app.get("/positions/{account}")
+def get_all_positions(account: str):
     try:
         raw = sterling.all_positions(account)
         return {"account": account, "positions_raw": raw}
@@ -193,8 +221,8 @@ async def get_all_positions(account: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/orders", tags=["orders"])
-async def get_orders():
+@app.get("/orders")
+def get_orders():
     try:
         cnt = sterling.get_orders()
         return {"open_orders_count": cnt}
@@ -202,8 +230,8 @@ async def get_orders():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/order/status/{order_id}", tags=["orders"])
-async def order_status(order_id: str):
+@app.get("/order/status/{order_id}")
+def order_status(order_id: str):
     try:
         status = sterling.order_status(order_id)
         return {"order_id": order_id, "status": status}
@@ -211,25 +239,10 @@ async def order_status(order_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ---------------------------
-# Utility
-# ---------------------------
-@app.get("/server_time", tags=["utility"])
-async def get_server_time():
-    try:
-        if hasattr(sterling.conn, "GetServerTime"):
-            return {"server_time": sterling.conn.GetServerTime()}
-        return {"server_time": None, "note": "GetServerTime not implemented in wrapper"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ============================================================
+# RUN
+# ============================================================
 
-
-# ---------------------------
-# Run
-# ---------------------------
 if __name__ == "__main__":
     import uvicorn
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    uvicorn.run("connector.app:app", host="0.0.0.0", port=6000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=6000)
