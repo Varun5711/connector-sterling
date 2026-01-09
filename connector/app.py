@@ -18,10 +18,18 @@ class UnifiedOrderRequest(BaseModel):
     ord_size: int
     ord_disp: Optional[int] = 0
     ord_route: str
-    ord_price: Optional[float] = 0.0
     ord_side: str
     ord_tif: Optional[str] = "D"
+
+    # For backward compatibility
+    ord_price: Optional[float] = 0.0
     ord_type: Optional[str] = None
+
+    # New fields for all order types
+    price_type: Optional[int] = None  # Sterling price type: 1=Market, 5=Limit, 7=StopLimit, 100=Stop, 101=StopLimit, 102=TrailingStop
+    limit_price: Optional[float] = 0.0
+    stop_price: Optional[float] = 0.0
+    client_order_id: Optional[str] = None
 
 
 class StopOrderRequest(BaseModel):
@@ -85,56 +93,153 @@ def root():
 @app.post("/order")
 def place_order(req: UnifiedOrderRequest):
     try:
-        is_market = (
-            req.ord_type == "M"
-            or req.ord_price is None
-            or req.ord_price == 0.0
-        )
+        # Use price_type if provided (new format), otherwise fallback to old format
+        if req.price_type is not None:
+            # New format: Handle all order types based on Sterling price_type
+            # 1=Market, 5=Limit, 7=StopLimit, 100=ServerStop, 101=ServerStopLimit, 102=TrailingStop
 
-        print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} ({'MKT' if is_market else 'LMT'})")
+            if req.price_type == 1:  # Market
+                print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} MARKET")
+                result = sterling.send_market(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ Market Order: {result}")
+                return {
+                    "order_type": "market",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size,
+                    "client_order_id": req.client_order_id
+                }
 
-        if is_market:
-            result = sterling.send_market(
-                req.account,
-                req.symbol,
-                int(req.ord_size),
-                int(req.ord_disp or 0),
-                req.ord_route,
-                req.ord_side,
-                req.ord_tif or "D"
-            )
-            
-            print(f"✅ {result}")
-            
-            return {
-                "order_type": "market",
-                "order_id": result,
-                "symbol": req.symbol,
-                "side": req.ord_side,
-                "quantity": req.ord_size
-            }
+            elif req.price_type == 5:  # Limit
+                print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} LIMIT @ ${req.limit_price}")
+                result = sterling.send_limit(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    float(req.limit_price),
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ Limit Order: {result}")
+                return {
+                    "order_type": "limit",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size,
+                    "price": req.limit_price,
+                    "client_order_id": req.client_order_id
+                }
+
+            elif req.price_type == 7 or req.price_type == 101:  # Stop Limit
+                print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} STOP LIMIT Stop:${req.stop_price} Limit:${req.limit_price}")
+                result = sterling.send_stoplimit(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    float(req.stop_price),
+                    float(req.limit_price),
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ Stop Limit Order: {result}")
+                return {
+                    "order_type": "stop_limit",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size,
+                    "stop_price": req.stop_price,
+                    "limit_price": req.limit_price,
+                    "client_order_id": req.client_order_id
+                }
+
+            elif req.price_type == 100 or req.price_type == 102:  # Stop or Trailing Stop
+                print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} STOP @ ${req.stop_price}")
+                result = sterling.send_stop(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    float(req.stop_price),
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ Stop Order: {result}")
+                return {
+                    "order_type": "stop",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size,
+                    "stop_price": req.stop_price,
+                    "client_order_id": req.client_order_id
+                }
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported price_type: {req.price_type}")
+
         else:
-            result = sterling.send_limit(
-                req.account,
-                req.symbol,
-                int(req.ord_size),
-                int(req.ord_disp or 0),
-                req.ord_route,
-                float(req.ord_price),
-                req.ord_side,
-                req.ord_tif or "D"
+            # Old format: Backward compatibility
+            is_market = (
+                req.ord_type == "M"
+                or req.ord_price is None
+                or req.ord_price == 0.0
             )
-            
-            print(f"✅ {result}")
-            
-            return {
-                "order_type": "limit",
-                "order_id": result,
-                "symbol": req.symbol,
-                "side": req.ord_side,
-                "quantity": req.ord_size,
-                "price": req.ord_price
-            }
+
+            print(f"📥 {req.symbol} {req.ord_side} {req.ord_size} ({'MKT' if is_market else 'LMT'}) [Legacy]")
+
+            if is_market:
+                result = sterling.send_market(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ {result}")
+                return {
+                    "order_type": "market",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size
+                }
+            else:
+                result = sterling.send_limit(
+                    req.account,
+                    req.symbol,
+                    int(req.ord_size),
+                    int(req.ord_disp or 0),
+                    req.ord_route,
+                    float(req.ord_price),
+                    req.ord_side,
+                    req.ord_tif or "D"
+                )
+                print(f"✅ {result}")
+                return {
+                    "order_type": "limit",
+                    "order_id": result,
+                    "symbol": req.symbol,
+                    "side": req.ord_side,
+                    "quantity": req.ord_size,
+                    "price": req.ord_price
+                }
 
     except Exception as e:
         print(f"❌ ERROR: {e}")
